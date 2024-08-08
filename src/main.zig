@@ -10,12 +10,16 @@ const BrainfuckError = error{
     UnmatchedClosingBracket,
 };
 
-const Command = enum { Right, Left, Inc, Dec, Write, Read, Open, Close };
+const Command = union(enum) { Right, Left, Inc, Dec, Write, Read, Open: usize, Close: usize };
 const Program = []const Command;
 
-inline fn parseCodeAlloc(allocator: std.mem.Allocator, code: anytype) !Program {
+fn parseCodeAlloc(allocator: std.mem.Allocator, code: anytype) !Program {
     var program = std.ArrayList(Command).init(allocator);
-    var loop_depth: isize = 0;
+    errdefer program.deinit();
+
+    var loop_stack = std.ArrayList(usize).init(allocator);
+    defer loop_stack.deinit();
+
     while (code.readByte()) |c| {
         switch (c) {
             '>' => try program.append(.Right),
@@ -25,60 +29,43 @@ inline fn parseCodeAlloc(allocator: std.mem.Allocator, code: anytype) !Program {
             '.' => try program.append(.Write),
             ',' => try program.append(.Read),
             '[' => {
-                loop_depth += 1;
-                try program.append(.Open);
+                try loop_stack.append(program.items.len);
+                try program.append(.{ .Open = undefined });
             },
             ']' => {
-                loop_depth -= 1;
-                try program.append(.Close);
+                const jump_index = loop_stack.popOrNull() orelse
+                    return error.UnmatchedClosingBracket;
+                program.items[jump_index] = .{ .Open = program.items.len };
+                try program.append(.{ .Close = jump_index });
             },
             else => {},
         }
     } else |_| {}
-    if (loop_depth == 0) {
-        return program.toOwnedSlice();
-    } else if (loop_depth < 0) {
-        return error.UnmatchedClosingBracket;
-    } else return error.UnmatchedOpenBracket;
+
+    if (loop_stack.items.len != 0) return error.UnmatchedOpenBracket;
+    return program.toOwnedSlice();
 }
 
-inline fn execute(reader: anytype, writer: anytype, program: Program) !void {
+fn execute(reader: anytype, writer: anytype, program: Program) !void {
     var pc: usize = 0;
     var tape: [cells]u8 = [_]u8{0} ** cells;
-    var i: usize = 0;
-    var loop_depth: usize = 0;
+    var head: usize = 0;
     while (pc < program.len) : (pc += 1) {
         switch (program[pc]) {
             .Right => {
-                i += 1;
-                if (i >= cells) return error.RightShiftOverflow;
+                head += 1;
+                if (head >= cells) return error.RightShiftOverflow;
             },
             .Left => {
-                i, const overflow = @subWithOverflow(i, 1);
+                head, const overflow = @subWithOverflow(head, 1);
                 if (overflow == 1) return error.LeftShiftUnderflow;
             },
-            .Inc => tape[i] +%= 1,
-            .Dec => tape[i] -%= 1,
-            .Write => try writer.print("{c}", .{tape[i]}),
-            .Read => tape[i] = try reader.readByte(),
-            .Open, .Close => |c| {
-                const open = (c == .Open);
-                const cond = if (open) (tape[i] != 0) else (tape[i] == 0);
-                if (cond) {
-                    loop_depth = if (open) loop_depth + 1 else loop_depth - 1;
-                    continue;
-                }
-                var skip_depth: usize = 1;
-                if (open) pc += 1 else pc -= 1;
-                while (true) : (pc = if (open) pc + 1 else pc - 1) {
-                    switch (program[pc]) {
-                        .Open => skip_depth = if (open) skip_depth + 1 else skip_depth - 1,
-                        .Close => skip_depth = if (open) skip_depth - 1 else skip_depth + 1,
-                        else => {},
-                    }
-                    if (skip_depth == 0) break;
-                }
-            },
+            .Inc => tape[head] +%= 1,
+            .Dec => tape[head] -%= 1,
+            .Write => try writer.print("{c}", .{tape[head]}),
+            .Read => tape[head] = try reader.readByte(),
+            .Open => |c| pc = if (tape[head] == 0) c else pc,
+            .Close => |c| pc = if (tape[head] != 0) c else pc,
         }
     }
 }
