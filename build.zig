@@ -7,11 +7,17 @@ pub fn build(b: *std.Build) void {
         "Compile a single brainfuck program instead of an interpreter",
     );
 
+    const name = b.option(
+        []const u8,
+        "name",
+        "The name of the executable, defaults to brainzig",
+    ) orelse "brainzig";
+
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name = "brainzig",
+        .name = name,
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
