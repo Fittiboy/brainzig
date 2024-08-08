@@ -13,37 +13,54 @@ const BrainfuckError = error{
 const Command = union(enum) { Right, Left, Inc, Dec, Write, Read, Open: usize, Close: usize };
 const Program = []const Command;
 
-fn parseCodeAlloc(allocator: std.mem.Allocator, code: anytype) !Program {
-    var program = std.ArrayList(Command).init(allocator);
-    errdefer program.deinit();
-
-    var loop_stack = std.ArrayList(usize).init(allocator);
-    defer loop_stack.deinit();
-
+fn tokenCounts(code: anytype) ![2]usize {
+    @setEvalBranchQuota(20000);
+    var count: usize = 0;
+    var loops: usize = 0;
+    var closes: usize = 0;
     while (code.readByte()) |c| {
         switch (c) {
-            '>' => try program.append(.Right),
-            '<' => try program.append(.Left),
-            '+' => try program.append(.Inc),
-            '-' => try program.append(.Dec),
-            '.' => try program.append(.Write),
-            ',' => try program.append(.Read),
+            '>', '<', '+', '-', '.', ',' => count += 1,
             '[' => {
-                try loop_stack.append(program.items.len);
-                try program.append(.{ .Open = undefined });
+                count += 1;
+                loops += 1;
             },
             ']' => {
-                const jump_index = loop_stack.popOrNull() orelse
-                    return error.UnmatchedClosingBracket;
-                program.items[jump_index] = .{ .Open = program.items.len };
-                try program.append(.{ .Close = jump_index });
+                count += 1;
+                closes += 1;
             },
             else => {},
         }
     } else |_| {}
+    if (loops > closes) {
+        return error.UnmatchedOpenBracket;
+    } else if (loops < closes) return error.UnmatchedClosingBracket;
 
-    if (loop_stack.items.len != 0) return error.UnmatchedOpenBracket;
-    return program.toOwnedSlice();
+    return .{ count, loops };
+}
+
+fn parseCode(program: *std.ArrayListUnmanaged(Command), loop_stack: *std.ArrayListUnmanaged(usize), code: anytype) !Program {
+    while (code.readByte()) |c| {
+        switch (c) {
+            '>' => program.appendAssumeCapacity(.Right),
+            '<' => program.appendAssumeCapacity(.Left),
+            '+' => program.appendAssumeCapacity(.Inc),
+            '-' => program.appendAssumeCapacity(.Dec),
+            '.' => program.appendAssumeCapacity(.Write),
+            ',' => program.appendAssumeCapacity(.Read),
+            '[' => {
+                loop_stack.appendAssumeCapacity(program.items.len);
+                program.appendAssumeCapacity(.{ .Open = undefined });
+            },
+            ']' => {
+                const jump_index = loop_stack.pop();
+                program.items[jump_index] = .{ .Open = program.items.len };
+                program.appendAssumeCapacity(.{ .Close = jump_index });
+            },
+            else => {},
+        }
+    } else |_| {}
+    return program.items;
 }
 
 fn execute(reader: anytype, writer: anytype, program: Program) !void {
@@ -74,25 +91,58 @@ pub fn main() !void {
     const stdin = std.io.getStdIn().reader();
     const stdout = std.io.getStdOut().writer();
 
-    var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
-    const gpa = general_purpose_allocator.allocator();
+    if (config.file) |filename| {
+        const program = comptime blk: {
+            const code = @embedFile(filename);
+            var stream = std.io.fixedBufferStream(code[0..]);
 
-    const program = prg: {
-        var filename: ?[]const u8 = null;
+            const size, const loops = try tokenCounts(stream.reader());
+            try stream.seekTo(0);
+
+            var prog_buf: [size]Command = undefined;
+            var prog_list = std.ArrayListUnmanaged(Command).initBuffer(&prog_buf);
+
+            var loop_buf: [loops]usize = undefined;
+            var loop_stack = std.ArrayListUnmanaged(usize).initBuffer(&loop_buf);
+
+            const prog = parseCode(&prog_list, &loop_stack, stream.reader()) catch |err| {
+                @compileError(std.fmt.comptimePrint("{s}", .{err}));
+            };
+            var program: [size]Command = undefined;
+            std.mem.copyForwards(Command, &program, prog);
+            break :blk program;
+        };
+
+        try execute(stdin, stdout, &program);
+        try stdout.print("\n", .{});
+    } else {
+        var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
+        const gpa = general_purpose_allocator.allocator();
+
         const args = try std.process.argsAlloc(gpa);
         defer std.process.argsFree(gpa, args);
-        filename = if (config.file == null) if (args.len < 2) {
+        const filename = if (args.len < 2) {
             const stderr = std.io.getStdErr().writer();
             try stderr.print("Please provide a brainfuck source file!\n", .{});
             return;
-        } else args[1] else config.file;
-
-        const file = try std.fs.cwd().openFile(filename.?, .{});
+        } else args[1];
+        const file = try std.fs.cwd().openFile(filename, .{});
         defer file.close();
-        break :prg try parseCodeAlloc(gpa, file.reader());
-    };
 
-    defer gpa.free(program);
-    try execute(stdin, stdout, program);
-    try stdout.print("\n", .{});
+        const size, const loops = try tokenCounts(file.reader());
+        try file.seekTo(0);
+
+        const prog_buf = try gpa.alloc(Command, size);
+        defer gpa.free(prog_buf);
+        var prog_list = std.ArrayListUnmanaged(Command).initBuffer(prog_buf);
+
+        const loop_buf = try gpa.alloc(usize, loops);
+        defer gpa.free(loop_buf);
+        var loop_stack = std.ArrayListUnmanaged(usize).initBuffer(loop_buf);
+
+        const program = try parseCode(&prog_list, &loop_stack, file.reader());
+
+        try execute(stdin, stdout, program);
+        try stdout.print("\n", .{});
+    }
 }
