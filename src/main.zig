@@ -1,18 +1,19 @@
 const std = @import("std");
+const config = @import("config");
 
 const cells: usize = 30_000;
 
-pub const BrainfuckError = error{
+const BrainfuckError = error{
     LeftShiftUnderflow,
     RightShiftOverflow,
     UnmatchedOpenBracket,
     UnmatchedClosingBracket,
 };
 
-pub const Command = enum { Right, Left, Inc, Dec, Write, Read, Open, Close };
-pub const Program = []const Command;
+const Command = enum { Right, Left, Inc, Dec, Write, Read, Open, Close };
+const Program = []const Command;
 
-pub fn parseCodeAlloc(allocator: std.mem.Allocator, code: anytype) !Program {
+inline fn parseCodeAlloc(allocator: std.mem.Allocator, code: anytype) !Program {
     var program = std.ArrayList(Command).init(allocator);
     var loop_depth: isize = 0;
     while (code.readByte()) |c| {
@@ -41,7 +42,7 @@ pub fn parseCodeAlloc(allocator: std.mem.Allocator, code: anytype) !Program {
     } else return error.UnmatchedOpenBracket;
 }
 
-pub fn execute(reader: anytype, writer: anytype, program: Program) !void {
+inline fn execute(reader: anytype, writer: anytype, program: Program) !void {
     var pc: usize = 0;
     var tape: [cells]u8 = [_]u8{0} ** cells;
     var i: usize = 0;
@@ -89,18 +90,19 @@ pub fn main() !void {
     var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
     const gpa = general_purpose_allocator.allocator();
 
-    const args = try std.process.argsAlloc(gpa);
-    defer std.process.argsFree(gpa, args);
-    if (args.len < 2) {
-        const stderr = std.io.getStdErr().writer();
-        try stderr.print("Please provide a brainfuck source file!\n", .{});
-        return;
-    }
+    const program = prg: {
+        var filename: ?[]const u8 = null;
+        const args = try std.process.argsAlloc(gpa);
+        defer std.process.argsFree(gpa, args);
+        filename = if (config.file == null) if (args.len < 2) {
+            const stderr = std.io.getStdErr().writer();
+            try stderr.print("Please provide a brainfuck source file!\n", .{});
+            return;
+        } else args[1] else config.file;
 
-    const program = blk: {
-        const file = try std.fs.cwd().openFile(args[1], .{});
+        const file = try std.fs.cwd().openFile(filename.?, .{});
         defer file.close();
-        break :blk try parseCodeAlloc(gpa, file.reader());
+        break :prg try parseCodeAlloc(gpa, file.reader());
     };
 
     defer gpa.free(program);
