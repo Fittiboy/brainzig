@@ -80,7 +80,7 @@ fn execute(reader: anytype, writer: anytype, program: Program) !void {
             .Inc => tape[head] +%= 1,
             .Dec => tape[head] -%= 1,
             .Write => try writer.print("{c}", .{tape[head]}),
-            .Read => tape[head] = try reader.readByte(),
+            .Read => tape[head] = reader.readByte() catch 0,
             .Open => |c| pc = if (tape[head] == 0) c else pc,
             .Close => |c| pc = if (tape[head] != 0) c else pc,
         }
