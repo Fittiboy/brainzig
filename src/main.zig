@@ -108,10 +108,6 @@ fn parseCode(
 }
 
 fn execute(reader: anytype, writer: anytype, program: Program) !void {
-    for (program) |i| {
-        std.debug.print("{any}\n", .{i});
-    }
-
     var pc: usize = 0;
     var tape: [cells]u8 = [_]u8{0} ** cells;
     var head: usize = 0;
