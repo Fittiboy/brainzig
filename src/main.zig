@@ -8,9 +8,20 @@ const BrainfuckError = error{
     RightShiftOverflow,
     UnmatchedOpenBracket,
     UnmatchedClosingBracket,
+    InputError,
+    OutputError,
 };
 
-const Command = union(enum) { Right, Left, Inc, Dec, Write, Read, Open: usize, Close: usize };
+const Command = union(enum) {
+    Right: usize,
+    Left: usize,
+    Inc: u8,
+    Dec: u8,
+    Write: usize,
+    Read,
+    Open: usize,
+    Close: usize,
+};
 const Program = []const Command;
 
 fn tokenCounts(code: anytype) ![2]usize {
@@ -18,16 +29,18 @@ fn tokenCounts(code: anytype) ![2]usize {
     var count: usize = 0;
     var loops: usize = 0;
     var closes: usize = 0;
+    var last_char: ?u8 = null;
     while (code.readByte()) |c| {
         switch (c) {
-            '>', '<', '+', '-', '.', ',' => count += 1,
-            '[' => {
+            '>', '<', '+', '-', '.', ',', '[', ']' => {
+                defer last_char = c;
+                switch (c) {
+                    '>', '<', '+', '-' => if (last_char) |l| if (l == c) continue,
+                    '[' => loops += 1,
+                    ']' => closes += 1,
+                    else => {},
+                }
                 count += 1;
-                loops += 1;
-            },
-            ']' => {
-                count += 1;
-                closes += 1;
             },
             else => {},
         }
@@ -39,47 +52,82 @@ fn tokenCounts(code: anytype) ![2]usize {
     return .{ count, loops };
 }
 
-fn parseCode(program: *std.ArrayListUnmanaged(Command), loop_stack: *std.ArrayListUnmanaged(usize), code: anytype) !Program {
+fn parseCode(
+    program: *std.ArrayListUnmanaged(Command),
+    loop_stack: *std.ArrayListUnmanaged(usize),
+    code: anytype,
+) !Program {
+    var repeats: usize = 0;
+    var last_command: ?Command = null;
+
     while (code.readByte()) |c| {
-        switch (c) {
-            '>' => program.appendAssumeCapacity(.Right),
-            '<' => program.appendAssumeCapacity(.Left),
-            '+' => program.appendAssumeCapacity(.Inc),
-            '-' => program.appendAssumeCapacity(.Dec),
-            '.' => program.appendAssumeCapacity(.Write),
-            ',' => program.appendAssumeCapacity(.Read),
-            '[' => {
-                loop_stack.appendAssumeCapacity(program.items.len);
-                program.appendAssumeCapacity(.{ .Open = undefined });
-            },
-            ']' => {
-                const jump_index = loop_stack.pop();
-                program.items[jump_index] = .{ .Open = program.items.len };
-                program.appendAssumeCapacity(.{ .Close = jump_index });
-            },
-            else => {},
+        const current_command: ?Command = switch (c) {
+            '>' => .{ .Right = 1 },
+            '<' => .{ .Left = 1 },
+            '+' => .{ .Inc = 1 },
+            '-' => .{ .Dec = 1 },
+            '.' => .{ .Write = 1 },
+            ',' => .Read,
+            '[' => .{ .Open = undefined },
+            ']' => .{ .Close = undefined },
+            else => null,
+        };
+
+        if (current_command) |cmd| {
+            if (last_command) |last| {
+                if (std.meta.activeTag(cmd) == std.meta.activeTag(last)) {
+                    repeats += 1;
+                } else {
+                    switch (last) {
+                        .Right => |v| program.appendAssumeCapacity(.{ .Right = v + repeats }),
+                        .Left => |v| program.appendAssumeCapacity(.{ .Left = v + repeats }),
+                        .Inc => |v| program.appendAssumeCapacity(.{ .Inc = v + @as(u8, @intCast(repeats)) }),
+                        .Dec => |v| program.appendAssumeCapacity(.{ .Dec = v + @as(u8, @intCast(repeats)) }),
+                        .Write => |v| program.appendAssumeCapacity(.{ .Write = v + repeats }),
+                        .Read => program.appendAssumeCapacity(.Read),
+                        .Open => {
+                            loop_stack.appendAssumeCapacity(program.items.len);
+                            program.appendAssumeCapacity(.{ .Open = undefined });
+                        },
+                        .Close => {
+                            const jump_index = loop_stack.pop();
+                            program.items[jump_index] = .{ .Open = program.items.len };
+                            program.appendAssumeCapacity(.{ .Close = jump_index });
+                        },
+                    }
+                    repeats = 0;
+                }
+            }
+            last_command = cmd;
         }
     } else |_| {}
+
+    if (last_command) |last| program.appendAssumeCapacity(last);
+
     return program.items;
 }
 
 fn execute(reader: anytype, writer: anytype, program: Program) !void {
+    for (program) |i| {
+        std.debug.print("{any}\n", .{i});
+    }
+
     var pc: usize = 0;
     var tape: [cells]u8 = [_]u8{0} ** cells;
     var head: usize = 0;
     while (pc < program.len) : (pc += 1) {
         switch (program[pc]) {
-            .Right => {
-                head += 1;
+            .Right => |v| {
+                head += v;
                 if (head >= cells) return error.RightShiftOverflow;
             },
-            .Left => {
-                head, const overflow = @subWithOverflow(head, 1);
-                if (overflow == 1) return error.LeftShiftUnderflow;
+            .Left => |v| {
+                if (v > head) return error.LeftShiftUnderflow;
+                head -= v;
             },
-            .Inc => tape[head] +%= 1,
-            .Dec => tape[head] -%= 1,
-            .Write => try writer.print("{c}", .{tape[head]}),
+            .Inc => |v| tape[head] +%= v,
+            .Dec => |v| tape[head] -%= v,
+            .Write => |v| for (0..v) |_| try writer.print("{c}", .{tape[head]}),
             .Read => tape[head] = reader.readByte() catch 0,
             .Open => |c| pc = if (tape[head] == 0) c else pc,
             .Close => |c| pc = if (tape[head] != 0) c else pc,
