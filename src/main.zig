@@ -120,56 +120,57 @@ pub fn main() !void {
         const gpa = general_purpose_allocator.allocator();
 
         const CodeReader = union(enum) {
+            const Self = @This();
             file: struct {
                 const File = std.fs.File;
-                file: File,
+                f: File,
                 reader: std.io.Reader(File, std.posix.ReadError, File.read),
             },
-            stream: struct {
-                const FBS = std.io.FixedBufferStream([]u8);
-                code: []u8,
-                stream: FBS,
-                reader: std.io.Reader(*FBS, error{}, FBS.read),
+            memory: struct {
+                const Stream = std.io.FixedBufferStream([]u8);
+                slice: []u8,
+                stream: Stream,
+                reader: std.io.Reader(*Stream, error{}, Stream.read),
             },
 
-            pub fn seekTo(self: *@This(), i: usize) !void {
-                switch (self.*) {
-                    .file => |f| try f.file.seekTo(i),
-                    .stream => |*s| {
-                        try s.stream.seekTo(i);
-                        s.reader = s.stream.reader();
-                    },
-                }
-            }
-
-            pub fn readByte(self: @This()) !u8 {
+            pub fn readByte(self: Self) !u8 {
                 switch (self) {
                     inline else => |r| return r.reader.readByte(),
                 }
             }
 
-            pub fn free(self: @This(), allocator: std.mem.Allocator) void {
+            pub fn seekTo(self: *Self, offset: usize) !void {
+                switch (self.*) {
+                    .file => |*f| try f.f.seekTo(offset),
+                    .memory => |*m| {
+                        try m.stream.seekTo(offset);
+                        m.reader = m.stream.reader();
+                    },
+                }
+            }
+
+            pub fn deinit(self: Self, allocator: std.mem.Allocator) void {
                 switch (self) {
-                    .file => |file| file.file.close(),
-                    .stream => |r| allocator.free(r.code),
+                    .file => |f| f.f.close(),
+                    .memory => |m| allocator.free(m.slice),
                 }
             }
         };
 
         const args = try std.process.argsAlloc(gpa);
         defer std.process.argsFree(gpa, args);
+
         var reader = if (args.len > 1) blk: {
-            const filename = args[1];
-            const file = try std.fs.cwd().openFile(filename, .{});
+            const file = try std.fs.cwd().openFile(args[1], .{});
             const reader = file.reader();
-            break :blk CodeReader{ .file = .{ .file = file, .reader = reader } };
+            break :blk CodeReader{ .file = .{ .f = file, .reader = reader } };
         } else blk: {
-            const code = try stdin.readAllAlloc(gpa, std.math.maxInt(usize));
-            var stream = std.io.fixedBufferStream(code);
+            const slice = try stdin.readAllAlloc(gpa, std.math.maxInt(usize));
+            var stream = std.io.fixedBufferStream(slice);
             const reader = stream.reader();
-            break :blk CodeReader{ .stream = .{ .code = code, .stream = stream, .reader = reader } };
+            break :blk CodeReader{ .memory = .{ .slice = slice, .stream = stream, .reader = reader } };
         };
-        defer reader.free(gpa);
+        defer reader.deinit(gpa);
 
         const size, const loops = try tokenCounts(reader);
         try reader.seekTo(0);
