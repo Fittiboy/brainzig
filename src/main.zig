@@ -11,96 +11,55 @@ const BrainfuckError = error{
 };
 
 const Command = union(enum) {
-    Right: usize,
-    Left: usize,
-    Inc: u8,
-    Dec: u8,
+    Shift: isize,
+    Add: i8,
     Write: usize,
-    Read,
+    Read: usize,
     Open: usize,
     Close: usize,
 };
+
 const Program = []const Command;
-
-fn tokenCounts(code: anytype) ![2]usize {
-    @setEvalBranchQuota(4_294_967_295);
-    var count: usize = 0;
-    var loops: usize = 0;
-    var closes: usize = 0;
-    var last_char: ?u8 = null;
-    while (code.readByte()) |c| {
-        switch (c) {
-            '>', '<', '+', '-', '.', ',', '[', ']' => {
-                defer last_char = c;
-                switch (c) {
-                    '>', '<', '+', '-' => if (last_char) |l| if (l == c) continue,
-                    '[' => loops += 1,
-                    ']' => closes += 1,
-                    else => {},
-                }
-                count += 1;
-            },
-            else => {},
-        }
-    } else |_| {}
-    if (loops > closes) {
-        return error.UnmatchedOpenBracket;
-    } else if (loops < closes) return error.UnmatchedClosingBracket;
-
-    return .{ count, loops };
-}
 
 fn parseCode(
     program: *std.ArrayListUnmanaged(Command),
     loop_stack: *std.ArrayListUnmanaged(usize),
     code: anytype,
 ) !Program {
-    var repeats: usize = 0;
-    var last_command: ?Command = null;
-
+    @setEvalBranchQuota(4_294_967_295);
     while (code.readByte()) |c| {
-        const current_command: ?Command = switch (c) {
-            '>' => .{ .Right = 1 },
-            '<' => .{ .Left = 1 },
-            '+' => .{ .Inc = 1 },
-            '-' => .{ .Dec = 1 },
+        var cmd: Command = switch (c) {
+            '>' => .{ .Shift = 1 },
+            '<' => .{ .Shift = -1 },
+            '+' => .{ .Add = 1 },
+            '-' => .{ .Add = -1 },
             '.' => .{ .Write = 1 },
-            ',' => .Read,
+            ',' => .{ .Read = 1 },
             '[' => .{ .Open = undefined },
             ']' => .{ .Close = undefined },
-            else => null,
+            else => continue,
         };
 
-        if (current_command) |cmd| {
-            if (last_command) |last| {
-                if (std.meta.activeTag(cmd) == std.meta.activeTag(last)) {
-                    repeats += 1;
-                } else {
-                    switch (last) {
-                        .Right => |v| program.appendAssumeCapacity(.{ .Right = v + repeats }),
-                        .Left => |v| program.appendAssumeCapacity(.{ .Left = v + repeats }),
-                        .Inc => |v| program.appendAssumeCapacity(.{ .Inc = v + @as(u8, @intCast(repeats)) }),
-                        .Dec => |v| program.appendAssumeCapacity(.{ .Dec = v + @as(u8, @intCast(repeats)) }),
-                        .Write => |v| program.appendAssumeCapacity(.{ .Write = v + repeats }),
-                        .Read => program.appendAssumeCapacity(.Read),
-                        .Open => {
-                            loop_stack.appendAssumeCapacity(program.items.len);
-                            program.appendAssumeCapacity(.{ .Open = undefined });
-                        },
-                        .Close => {
-                            const jump_index = loop_stack.pop();
-                            program.items[jump_index] = .{ .Open = program.items.len };
-                            program.appendAssumeCapacity(.{ .Close = jump_index });
-                        },
-                    }
-                    repeats = 0;
-                }
-            }
-            last_command = cmd;
+        if (program.getLastOrNull()) |last| switch (last) {
+            inline else => |v| switch (cmd) {
+                inline else => |*n| if (std.meta.activeTag(last) == std.meta.activeTag(cmd)) {
+                    if (c == '[' or c == ']') continue;
+                    n.* +%= @as(@TypeOf(n.*), @intCast(v));
+                    program.items[program.items.len - 1] = cmd;
+                    continue;
+                },
+            },
+        };
+        if (c == ']') {
+            const jump_index = loop_stack.pop();
+            program.items[jump_index] = .{ .Open = program.items.len };
+            program.appendAssumeCapacity(.{ .Close = jump_index });
         }
+        if (c == '[') {
+            loop_stack.appendAssumeCapacity(program.items.len);
+            program.appendAssumeCapacity(cmd);
+        } else program.appendAssumeCapacity(cmd);
     } else |_| {}
-
-    if (last_command) |last| program.appendAssumeCapacity(last);
 
     return program.items;
 }
@@ -111,18 +70,22 @@ fn execute(reader: anytype, writer: anytype, program: Program) !void {
     var head: usize = 0;
     while (pc < program.len) : (pc += 1) {
         switch (program[pc]) {
-            .Right => |v| {
-                head += v;
+            .Shift => |v| {
+                if (v < 0) {
+                    if (-v > head) return error.LeftShiftUnderflow;
+                    head -= @as(usize, @intCast(-v));
+                } else head += @as(usize, @intCast(v));
                 if (head >= cells) return error.RightShiftOverflow;
             },
-            .Left => |v| {
-                if (v > head) return error.LeftShiftUnderflow;
-                head -= v;
+            .Add => |v| {
+                if (v < 0) {
+                    tape[head] -%= @as(u8, @intCast(-v));
+                } else tape[head] +%= @as(u8, @intCast(v));
             },
-            .Inc => |v| tape[head] +%= v,
-            .Dec => |v| tape[head] -%= v,
             .Write => |v| for (0..v) |_| try writer.print("{c}", .{tape[head]}),
-            .Read => tape[head] = reader.readByte() catch 0,
+            .Read => |v| for (0..v) |_| {
+                tape[head] = reader.readByte() catch 0;
+            },
             .Open => |c| pc = if (tape[head] == 0) c else pc,
             .Close => |c| pc = if (tape[head] != 0) c else pc,
         }
@@ -138,19 +101,16 @@ pub fn main() !void {
             const code = @embedFile(filename);
             var stream = std.io.fixedBufferStream(code[0..]);
 
-            const size, const loops = try tokenCounts(stream.reader());
-            try stream.seekTo(0);
-
-            var prog_buf: [size]Command = undefined;
+            var prog_buf: [stream.buffer.len]Command = undefined;
             var prog_list = std.ArrayListUnmanaged(Command).initBuffer(&prog_buf);
 
-            var loop_buf: [loops]usize = undefined;
+            var loop_buf: [stream.buffer.len]usize = undefined;
             var loop_stack = std.ArrayListUnmanaged(usize).initBuffer(&loop_buf);
 
             const prog = parseCode(&prog_list, &loop_stack, stream.reader()) catch |err| {
                 @compileError(std.fmt.comptimePrint("{s}", .{err}));
             };
-            var program: [size]Command = undefined;
+            var program: [prog.len]Command = undefined;
             std.mem.copyForwards(Command, &program, prog);
             break :blk program;
         };
@@ -179,6 +139,16 @@ pub fn main() !void {
                 switch (self) {
                     inline else => |r| return r.reader.readByte(),
                 }
+            }
+
+            pub fn len(self: Self) !usize {
+                return switch (self) {
+                    .file => |f| blk: {
+                        const stat = try f.f.stat();
+                        break :blk stat.size;
+                    },
+                    .memory => |m| m.slice.len,
+                };
             }
 
             pub fn seekTo(self: *Self, offset: usize) !void {
@@ -214,14 +184,11 @@ pub fn main() !void {
         };
         defer reader.deinit(gpa);
 
-        const size, const loops = try tokenCounts(reader);
-        try reader.seekTo(0);
-
-        const prog_buf = try gpa.alloc(Command, size);
+        const prog_buf = try gpa.alloc(Command, try reader.len());
         defer gpa.free(prog_buf);
         var prog_list = std.ArrayListUnmanaged(Command).initBuffer(prog_buf);
 
-        const loop_buf = try gpa.alloc(usize, loops);
+        const loop_buf = try gpa.alloc(usize, try reader.len());
         defer gpa.free(loop_buf);
         var loop_stack = std.ArrayListUnmanaged(usize).initBuffer(loop_buf);
 
