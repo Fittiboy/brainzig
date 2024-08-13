@@ -8,8 +8,6 @@ const BrainfuckError = error{
     RightShiftOverflow,
     UnmatchedOpenBracket,
     UnmatchedClosingBracket,
-    InputError,
-    OutputError,
 };
 
 const Command = union(enum) {
@@ -25,7 +23,7 @@ const Command = union(enum) {
 const Program = []const Command;
 
 fn tokenCounts(code: anytype) ![2]usize {
-    @setEvalBranchQuota(20000);
+    @setEvalBranchQuota(4_294_967_295);
     var count: usize = 0;
     var loops: usize = 0;
     var closes: usize = 0;
