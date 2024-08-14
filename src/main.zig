@@ -3,7 +3,7 @@ const config = @import("config");
 
 const cells: usize = 30_000;
 
-const BrainfuckError = error{
+pub const BrainfuckError = error{
     LeftShiftUnderflow,
     RightShiftOverflow,
     UnmatchedOpenBracket,
@@ -92,24 +92,75 @@ fn execute(reader: anytype, writer: anytype, program: Program) !void {
     }
 }
 
+pub fn contains(haystack: []const u8, needle: u8) bool {
+    for (haystack) |h| if (h == needle) return true;
+    return false;
+}
+
+fn parseSimplified(
+    program: *std.ArrayListUnmanaged(Command),
+    loop_stack: *std.ArrayListUnmanaged(usize),
+    tokens: *std.mem.TokenIterator(u8, .scalar),
+) !Program {
+    while (tokens.next()) |t| {
+        if (!contains("><+-.,[]", t[0])) continue;
+        const c = t[0];
+        const count: isize = try std.fmt.parseInt(usize, t[1..], 10);
+        program.appendAssumeCapacity(switch (c) {
+            '>' => .{ .Shift = count },
+            '<' => .{ .Shift = -count },
+            '+' => .{ .Add = count },
+            '-' => .{ .Add = -count },
+            '.' => .{ .Write = count },
+            ',' => .{ .Read = count },
+            '[' => blk: {
+                loop_stack.appendAssumeCapacity(program.items.len);
+                break :blk .{ .Open = undefined };
+            },
+            ']' => blk: {
+                const jump_index = loop_stack.pop();
+                program.items[jump_index] = .{ .Open = program.items.len };
+                break :blk .{ .Close = jump_index };
+            },
+            else => unreachable,
+        });
+    }
+    return program.items;
+}
+
 pub fn main() !void {
     const stdin = std.io.getStdIn().reader();
     const stdout = std.io.getStdOut().writer();
 
-    if (config.file) |filename| {
+    if (config.file != null) {
         const program = comptime blk: {
-            const code = @embedFile(filename);
-            var stream = std.io.fixedBufferStream(code[0..]);
+            const code = @embedFile("simplified");
+            // Even empty scripts have a loop count at the end
+            if (code.len == 1) return;
 
-            var prog_buf: [stream.buffer.len]Command = undefined;
+            @setEvalBranchQuota(4_294_967_295);
+            const size: usize = std.mem.count(u8, code, " ");
+            const depth = dpt: {
+                for (1..code.len) |i| {
+                    if (code[code.len - 1 - i] == ' ') {
+                        break :dpt std.fmt.parseInt(usize, code[code.len - i ..], 10) catch {
+                            @compileError("Couldn't parse loop depth!");
+                        };
+                    }
+                } else unreachable;
+            };
+
+            var prog_buf: [size]Command = undefined;
             var prog_list = std.ArrayListUnmanaged(Command).initBuffer(&prog_buf);
 
-            var loop_buf: [stream.buffer.len]usize = undefined;
+            var loop_buf: [depth]usize = undefined;
             var loop_stack = std.ArrayListUnmanaged(usize).initBuffer(&loop_buf);
 
-            const prog = parseCode(&prog_list, &loop_stack, stream.reader()) catch |err| {
-                @compileError(std.fmt.comptimePrint("{s}", .{err}));
+            var tokens = std.mem.tokenizeScalar(u8, code, ' ');
+            const prog = parseSimplified(&prog_list, &loop_stack, &tokens) catch |err| {
+                @compileError(std.fmt.comptimePrint("{any}", .{err}));
             };
+
             var program: [prog.len]Command = undefined;
             std.mem.copyForwards(Command, &program, prog);
             break :blk program;
@@ -117,84 +168,84 @@ pub fn main() !void {
 
         try execute(stdin, stdout, &program);
         try stdout.print("\n", .{});
-    } else {
-        var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
-        const gpa = general_purpose_allocator.allocator();
-
-        const CodeReader = union(enum) {
-            const Self = @This();
-            file: struct {
-                const File = std.fs.File;
-                f: File,
-                reader: std.io.Reader(File, std.posix.ReadError, File.read),
-            },
-            memory: struct {
-                const Stream = std.io.FixedBufferStream([]u8);
-                slice: []u8,
-                stream: Stream,
-                reader: std.io.Reader(*Stream, error{}, Stream.read),
-            },
-
-            pub fn readByte(self: Self) !u8 {
-                switch (self) {
-                    inline else => |r| return r.reader.readByte(),
-                }
-            }
-
-            pub fn len(self: Self) !usize {
-                return switch (self) {
-                    .file => |f| blk: {
-                        const stat = try f.f.stat();
-                        break :blk stat.size;
-                    },
-                    .memory => |m| m.slice.len,
-                };
-            }
-
-            pub fn seekTo(self: *Self, offset: usize) !void {
-                switch (self.*) {
-                    .file => |*f| try f.f.seekTo(offset),
-                    .memory => |*m| {
-                        try m.stream.seekTo(offset);
-                        m.reader = m.stream.reader();
-                    },
-                }
-            }
-
-            pub fn deinit(self: Self, allocator: std.mem.Allocator) void {
-                switch (self) {
-                    .file => |f| f.f.close(),
-                    .memory => |m| allocator.free(m.slice),
-                }
-            }
-        };
-
-        const args = try std.process.argsAlloc(gpa);
-        defer std.process.argsFree(gpa, args);
-
-        var reader = if (args.len > 1) blk: {
-            const file = try std.fs.cwd().openFile(args[1], .{});
-            const reader = file.reader();
-            break :blk CodeReader{ .file = .{ .f = file, .reader = reader } };
-        } else blk: {
-            const slice = try stdin.readAllAlloc(gpa, std.math.maxInt(usize));
-            var stream = std.io.fixedBufferStream(slice);
-            const reader = stream.reader();
-            break :blk CodeReader{ .memory = .{ .slice = slice, .stream = stream, .reader = reader } };
-        };
-        defer reader.deinit(gpa);
-
-        const prog_buf = try gpa.alloc(Command, try reader.len());
-        defer gpa.free(prog_buf);
-        var prog_list = std.ArrayListUnmanaged(Command).initBuffer(prog_buf);
-
-        const loop_buf = try gpa.alloc(usize, try reader.len());
-        defer gpa.free(loop_buf);
-        var loop_stack = std.ArrayListUnmanaged(usize).initBuffer(loop_buf);
-
-        const program = try parseCode(&prog_list, &loop_stack, reader);
-
-        try execute(stdin, stdout, program);
-        try stdout.print("\n", .{});
+        return;
     }
+    var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
+    const gpa = general_purpose_allocator.allocator();
+
+    const CodeReader = union(enum) {
+        const Self = @This();
+        file: struct {
+            const File = std.fs.File;
+            f: File,
+            reader: std.io.Reader(File, std.posix.ReadError, File.read),
+        },
+        memory: struct {
+            const Stream = std.io.FixedBufferStream([]u8);
+            slice: []u8,
+            stream: Stream,
+            reader: std.io.Reader(*Stream, error{}, Stream.read),
+        },
+
+        pub fn readByte(self: Self) !u8 {
+            switch (self) {
+                inline else => |r| return r.reader.readByte(),
+            }
+        }
+
+        pub fn len(self: Self) !usize {
+            return switch (self) {
+                .file => |f| blk: {
+                    const stat = try f.f.stat();
+                    break :blk stat.size;
+                },
+                .memory => |m| m.slice.len,
+            };
+        }
+
+        pub fn seekTo(self: *Self, offset: usize) !void {
+            switch (self.*) {
+                .file => |*f| try f.f.seekTo(offset),
+                .memory => |*m| {
+                    try m.stream.seekTo(offset);
+                    m.reader = m.stream.reader();
+                },
+            }
+        }
+
+        pub fn deinit(self: Self, allocator: std.mem.Allocator) void {
+            switch (self) {
+                .file => |f| f.f.close(),
+                .memory => |m| allocator.free(m.slice),
+            }
+        }
+    };
+
+    const args = try std.process.argsAlloc(gpa);
+    defer std.process.argsFree(gpa, args);
+
+    var reader = if (args.len > 1) blk: {
+        const file = try std.fs.cwd().openFile(args[1], .{});
+        const reader = file.reader();
+        break :blk CodeReader{ .file = .{ .f = file, .reader = reader } };
+    } else blk: {
+        const slice = try stdin.readAllAlloc(gpa, std.math.maxInt(usize));
+        var stream = std.io.fixedBufferStream(slice);
+        const reader = stream.reader();
+        break :blk CodeReader{ .memory = .{ .slice = slice, .stream = stream, .reader = reader } };
+    };
+    defer reader.deinit(gpa);
+
+    const prog_buf = try gpa.alloc(Command, try reader.len());
+    defer gpa.free(prog_buf);
+    var prog_list = std.ArrayListUnmanaged(Command).initBuffer(prog_buf);
+
+    const loop_buf = try gpa.alloc(usize, try reader.len());
+    defer gpa.free(loop_buf);
+    var loop_stack = std.ArrayListUnmanaged(usize).initBuffer(loop_buf);
+
+    const program = try parseCode(&prog_list, &loop_stack, reader);
+
+    try execute(stdin, stdout, program);
+    try stdout.print("\n", .{});
 }

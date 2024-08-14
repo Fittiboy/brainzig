@@ -1,6 +1,9 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
     const file = b.option(
         []const u8,
         "file",
@@ -11,10 +14,30 @@ pub fn build(b: *std.Build) void {
         []const u8,
         "name",
         "The name of the executable, defaults to brainzig",
-    ) orelse "brainzig";
+    ) orelse if (file) |fname| blk: {
+        var period_idx = fname.len;
+        for (fname, 0..) |c, i| period_idx = if (c == '.') i else period_idx;
+        break :blk fname[0..period_idx];
+    } else "brainzig";
 
-    const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    const options = b.addOptions();
+    options.addOption(?[]const u8, "file", file);
+
+    const simplify = b.addExecutable(.{
+        .name = "simplify",
+        .root_source_file = b.path("src/simplify.zig"),
+        .target = b.host,
+    });
+
+    simplify.root_module.addOptions("config", options);
+
+    const dedup = b.addExecutable(.{
+        .name = "dedup",
+        .root_source_file = b.path("src/dedup.zig"),
+        .target = b.host,
+    });
+
+    dedup.root_module.addOptions("config", options);
 
     const exe = b.addExecutable(.{
         .name = name,
@@ -23,14 +46,27 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const options = b.addOptions();
-    options.addOption(?[]const u8, "file", file);
     exe.root_module.addOptions("config", options);
 
     b.installArtifact(exe);
 
-    const run_cmd = b.addRunArtifact(exe);
+    if (file) |fname| {
+        const run_simplify = b.addRunArtifact(simplify);
+        const path = run_simplify.addOutputFileArg(fname);
+        dedup.root_module.addAnonymousImport(
+            "simplified",
+            .{ .root_source_file = path },
+        );
+        const run_dedup = b.addRunArtifact(dedup);
+        const dedup_path = run_dedup.addOutputFileArg(fname);
 
+        exe.root_module.addAnonymousImport(
+            "simplified",
+            .{ .root_source_file = dedup_path },
+        );
+    }
+
+    const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
 
     if (b.args) |args| {
