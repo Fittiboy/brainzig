@@ -1,6 +1,11 @@
 const std = @import("std");
 const config = @import("config");
 
+pub fn contains(haystack: []const u8, needle: u8) bool {
+    for (haystack) |h| if (h == needle) return true;
+    return false;
+}
+
 pub fn main() !void {
     var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_state.deinit();
@@ -22,7 +27,7 @@ pub fn main() !void {
     var prev_c: ?u8 = null;
     var prev_count: usize = 0;
     while (tokens.next()) |t| {
-        if (t.len == 1) {
+        if (!contains("><+-.,[]", t[0])) {
             if (prev_c) |pc| try writer.print("{c}{d} ", .{ pc, prev_count });
             prev_c = t[0];
             break;

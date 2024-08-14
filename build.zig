@@ -39,6 +39,12 @@ pub fn build(b: *std.Build) void {
 
     dedup.root_module.addOptions("config", options);
 
+    // const manual = b.addExecutable(.{
+    //     .name = "manual",
+    //     .root_source_file = b.path("src/manual.zig"),
+    //     .target = b.host,
+    // });
+
     const exe = b.addExecutable(.{
         .name = name,
         .root_source_file = b.path("src/main.zig"),
@@ -53,12 +59,20 @@ pub fn build(b: *std.Build) void {
     if (file) |fname| {
         const run_simplify = b.addRunArtifact(simplify);
         const path = run_simplify.addOutputFileArg(fname);
+
         dedup.root_module.addAnonymousImport(
             "simplified",
             .{ .root_source_file = path },
         );
         const run_dedup = b.addRunArtifact(dedup);
         const dedup_path = run_dedup.addOutputFileArg(fname);
+
+        // manual.root_module.addAnonymousImport(
+        //     "simplified",
+        //     .{ .root_source_file = dedup_path },
+        // );
+        // const run_manual = b.addRunArtifact(manual);
+        // const manual_path = run_dedup.addOutputFileArg(fname);
 
         exe.root_module.addAnonymousImport(
             "simplified",
