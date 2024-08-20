@@ -1,10 +1,7 @@
 const std = @import("std");
 const config = @import("config");
 
-pub fn contains(haystack: []const u8, needle: u8) bool {
-    for (haystack) |h| if (h == needle) return true;
-    return false;
-}
+const contains = @import("root.zig").contains;
 
 pub fn main() !void {
     var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);

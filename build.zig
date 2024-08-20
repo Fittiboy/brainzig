@@ -23,28 +23,6 @@ pub fn build(b: *std.Build) void {
     const options = b.addOptions();
     options.addOption(?[]const u8, "file", file);
 
-    const simplify = b.addExecutable(.{
-        .name = "simplify",
-        .root_source_file = b.path("src/simplify.zig"),
-        .target = b.host,
-    });
-
-    simplify.root_module.addOptions("config", options);
-
-    const dedup = b.addExecutable(.{
-        .name = "dedup",
-        .root_source_file = b.path("src/dedup.zig"),
-        .target = b.host,
-    });
-
-    dedup.root_module.addOptions("config", options);
-
-    // const manual = b.addExecutable(.{
-    //     .name = "manual",
-    //     .root_source_file = b.path("src/manual.zig"),
-    //     .target = b.host,
-    // });
-
     const exe = b.addExecutable(.{
         .name = name,
         .root_source_file = b.path("src/main.zig"),
@@ -57,6 +35,22 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     if (file) |fname| {
+        const simplify = b.addExecutable(.{
+            .name = "simplify",
+            .root_source_file = b.path("src/simplify.zig"),
+            .target = b.host,
+        });
+
+        simplify.root_module.addOptions("config", options);
+
+        const dedup = b.addExecutable(.{
+            .name = "dedup",
+            .root_source_file = b.path("src/dedup.zig"),
+            .target = b.host,
+        });
+
+        dedup.root_module.addOptions("config", options);
+
         const run_simplify = b.addRunArtifact(simplify);
         const path = run_simplify.addOutputFileArg(fname);
 
@@ -66,13 +60,6 @@ pub fn build(b: *std.Build) void {
         );
         const run_dedup = b.addRunArtifact(dedup);
         const dedup_path = run_dedup.addOutputFileArg(fname);
-
-        // manual.root_module.addAnonymousImport(
-        //     "simplified",
-        //     .{ .root_source_file = dedup_path },
-        // );
-        // const run_manual = b.addRunArtifact(manual);
-        // const manual_path = run_dedup.addOutputFileArg(fname);
 
         exe.root_module.addAnonymousImport(
             "simplified",
