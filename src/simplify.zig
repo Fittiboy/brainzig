@@ -26,6 +26,11 @@ pub fn main() !void {
     var count: isize = 0;
     for (code) |c| {
         if (last_c == null) {
+            if (c == '[') {
+                loops += 1;
+                depth = @max(depth, loops - closes);
+            } else if (c == ']') return error.UnmatchedClosingBracket;
+
             switch (c) {
                 '>', '<', '+', '-', '.', ',', '[', ']' => {
                     last_c = c;
@@ -47,6 +52,7 @@ pub fn main() !void {
             '[', ']' => {
                 count += if (l == c) 1 else 0;
                 (if (c == '[') loops else closes) += 1;
+                if (closes > loops) return error.UnmatchedClosingBracket;
                 depth = @max(depth, loops - closes);
             },
             else => continue,
