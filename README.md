@@ -1,5 +1,6 @@
 # Brainzig
-A simple [Brainfuck](https://en.wikipedia.org/wiki/Brainfuck) interpreter I hacked together in Zig.
+A simple [Brainfuck](https://en.wikipedia.org/wiki/Brainfuck) interpreter I hacked together in Zig
+(works with 0.13.0, not higher).
 
 I saw a short Brainfuck program, which my brain—surprise surprise—didn't parse very well, so I
 wrote an interpreter to read it for me.
