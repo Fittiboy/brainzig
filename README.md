@@ -80,7 +80,7 @@ That's where the second preprocessor comes in and simply adds any remaining dupl
 
 These simplified versions of the Brainfuck code are generated at compile time when passing a `-Dfile`.
 That means the file that is to be embedded in [`main.zig`](src/main.zig) does not exist at compile time!
-Luckily, if you check [`build.zig`](src/build.zig ), you will find that I was able to make [`main.zig`](src/main.zig)
+Luckily, if you check [`build.zig`](build.zig ), you will find that I was able to make [`main.zig`](src/main.zig)
 depend on the outputs of the preprocessors!
 
 Doing this preprocessing on the Brainfuck code itself, instead of doing it after parsing it in [`main.zig`](src/main.zig ),
